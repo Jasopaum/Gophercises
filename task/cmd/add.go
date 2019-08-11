@@ -18,7 +18,6 @@ var addCmd = &cobra.Command{
         if err != nil {
             fmt.Printf("Error: ", err)
         }
-        fmt.Printf("Added %s to list.\n", task)
     },
 }
 

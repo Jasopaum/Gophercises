@@ -1,7 +1,6 @@
 package db
 
 import (
-    "fmt"
     "time"
     "encoding/binary"
 
@@ -12,8 +11,8 @@ var db *bolt.DB
 var taskBucket = []byte("Tasks")
 
 type Task struct {
-    key int
-    value string
+    Key int
+    Value string
 }
 
 func Init() error {
@@ -37,16 +36,25 @@ func CreateTask(task string) error {
     })
 }
 
-func ListTasks() error {
-    return db.View(func(tx *bolt.Tx) error {
+func ListTasks() ([]Task, error) {
+    var tasks []Task
+    err := db.View(func(tx *bolt.Tx) error {
         b := tx.Bucket(taskBucket)
         c := b.Cursor()
 
         for k, v := c.First(); k != nil; k, v = c.Next() {
-            fmt.Printf("key=%d, value=%s\n", btoi(k), string(v))
+            tasks = append(tasks,
+                           Task {Key: btoi(k), Value: string(v)})
         }
-
         return nil
+    })
+        return tasks, err
+}
+
+func DeleteTask(key int) error {
+    return db.Update(func(tx *bolt.Tx) error {
+        b := tx.Bucket(taskBucket)
+        return b.Delete(itob(key))
     })
 }
 
