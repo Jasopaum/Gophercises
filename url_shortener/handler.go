@@ -44,7 +44,7 @@ func YAMLHandler(yml []byte, fallback http.Handler) (http.HandlerFunc, error) {
 	err := yaml.Unmarshal(yml, &paths)
 	if err != nil {
 		log.Fatalf("error: %v", err)
-    }
+	}
 	mapPaths := make(map[string]string)
 	for _, p := range paths {
 		mapPaths[p.Short] = p.Long
@@ -54,5 +54,5 @@ func YAMLHandler(yml []byte, fallback http.Handler) (http.HandlerFunc, error) {
 
 type pathURL struct {
 	Short string `yaml:"path"`
-	Long string `yaml:"url"`
+	Long  string `yaml:"url"`
 }
