@@ -1,23 +1,33 @@
 package blackjack
 
 import (
+	"errors"
 	"fmt"
 	"gophercises/cardDeck"
 	"strconv"
 	"strings"
 )
 
-type Hand []cardDeck.Card
+type hand struct {
+	cards []cardDeck.Card
+	bet   int
+}
 
 type gameState struct {
-	dealerHand  Hand
-	playerHand  Hand
-	nbDecks     int
-	deck        []cardDeck.Card
-	nbRounds    int
-	curBet      int
+	nbDecks  int
+	deck     []cardDeck.Card
+	nbRounds int
+
+	dealerHand  []cardDeck.Card
+	playerHands []hand
+	idxHand     int
+
+	initBet     int
 	cumWinnings int
+
 	playersTurn bool
+
+	ai Player
 }
 
 type Options struct {
@@ -32,6 +42,7 @@ func New(opts Options) gameState {
 		nbDecks:     opts.Decks,
 		deck:        deck,
 		nbRounds:    opts.Hands,
+		playerHands: make([]hand, 1),
 		playersTurn: true,
 	}
 
@@ -39,129 +50,178 @@ func New(opts Options) gameState {
 }
 
 func (gs *gameState) Play(ai Player) int {
+	gs.ai = ai
 	lowNbCards := 20
 	for r := 0; r < gs.nbRounds; r++ {
 		shuffled := false
 		if len(gs.deck) < lowNbCards {
-			gs.deck = cardDeck.NewDeck(cardDeck.WithMultipleDecks(gs.nbDecks), cardDeck.WithShuffle())
-			fmt.Println("Deck has been shuffled")
+			shuffleDeck(gs)
 			shuffled = true
 		}
-		var b string
-		var err error
-		for {
-			b = ai.Bet(shuffled)
-			if gs.curBet, err = strconv.Atoi(b); err == nil {
-				break
-			}
-		}
+		playerBets(gs, shuffled)
 		distribute(gs)
-		for gs.playersTurn {
-			pHand := make([]cardDeck.Card, len(gs.playerHand))
-			copy(pHand, gs.playerHand)
-			move := ai.Play(pHand, gs.dealerHand[0])
-			move(gs)
-		}
+		playerPlays(gs)
 		dealerPlays(gs)
-		showResult(gs)
+		ai.EndRound(gs.playerHands, gs.dealerHand)
+		updateBalance(gs)
 		resetGame(gs)
 	}
 	return gs.cumWinnings
 }
 
-type action func(*gameState)
+func playerBets(gs *gameState, shuffled bool) {
+	var b string
+	var err error
+	for {
+		b = gs.ai.Bet(shuffled)
+		if gs.initBet, err = strconv.Atoi(b); err == nil {
+			if gs.initBet%10 != 0 {
+				fmt.Println("Bet must be a multiple of 10.")
+			} else {
+				break
+			}
+		}
+	}
+}
 
-func Hit(gs *gameState) {
-	gs.playerHand, gs.deck = draw(gs.playerHand, gs.deck)
-	if s, _ := Score(gs.playerHand); s > 21 {
+func playerPlays(gs *gameState) {
+	for gs.playersTurn {
+		pCards := gs.getCurPlayerHand().cards
+		cpCards := make([]cardDeck.Card, len(pCards))
+		copy(cpCards, pCards)
+		move := gs.ai.Play(cpCards, gs.dealerHand[0])
+		move(gs)
+	}
+}
+
+// Type englobing the possible moves a player can play
+// It is the return type of the Play method for the Player interface.
+type Action func(*gameState) error
+
+// Ask for another card
+func Hit(gs *gameState) error {
+	drawPlayer(gs)
+	if s, _ := Score(gs.playerHands[gs.idxHand].cards); s > 21 {
+		gs.idxHand++
+	}
+	if gs.idxHand >= len(gs.playerHands) {
 		gs.playersTurn = false
 	}
-}
-func Stand(gs *gameState) {
-	gs.playersTurn = false
-}
-func Double(gs *gameState) {
-	if len(gs.playerHand) > 2 {
-		fmt.Println("Can only double with 2 cards.")
-		return
-	}
-	gs.curBet *= 2
-	Hit(gs)
-	gs.playersTurn = false
+	return nil
 }
 
-func draw(h Hand, d []cardDeck.Card) (Hand, []cardDeck.Card) {
-	c, d := d[0], d[1:]
-	h = append(h, c)
-	return h, d
+// Stop asking for cards
+func Stand(gs *gameState) error {
+	gs.idxHand++
+	if gs.idxHand >= len(gs.playerHands) {
+		gs.playersTurn = false
+	}
+	return nil
+}
+
+// If the 2 cards in the player's hand have same rank, the player can split its hand
+func Split(gs *gameState) error {
+	pHand := gs.getCurPlayerHand()
+	if len(pHand.cards) != 2 || pHand.cards[0].Rank != pHand.cards[1].Rank {
+		return errors.New("Can only double with 2 cards of same rank.")
+	}
+	var card1, card2 []cardDeck.Card
+	split1 := hand{
+		cards: append(card1, pHand.cards[0]),
+		bet:   pHand.bet,
+	}
+	split2 := hand{
+		cards: append(card2, pHand.cards[1]),
+		bet:   pHand.bet,
+	}
+	gs.playerHands[gs.idxHand] = split1
+	gs.playerHands = append(gs.playerHands, split2)
+	return nil
+}
+
+// If the player has 2 cards in its hand, it can double its bet and ask for exactly one more card
+func Double(gs *gameState) error {
+	pCards := gs.getCurPlayerHand().cards
+	if len(pCards) != 2 {
+		return errors.New("Can only double with 2 cards.")
+	}
+	gs.playerHands[gs.idxHand].bet *= 2
+	Hit(gs)
+	Stand(gs)
+	return nil
+}
+
+func drawDealer(gs *gameState) {
+	var c cardDeck.Card
+	c, gs.deck = gs.deck[0], gs.deck[1:]
+	gs.dealerHand = append(gs.dealerHand, c)
+}
+func drawPlayer(gs *gameState) {
+	var c cardDeck.Card
+	c, gs.deck = gs.deck[0], gs.deck[1:]
+	gs.playerHands[gs.idxHand].cards = append(gs.playerHands[gs.idxHand].cards, c)
 }
 
 func distribute(gs *gameState) {
 	for i := 0; i < 2; i++ {
-		gs.playerHand, gs.deck = draw(gs.playerHand, gs.deck)
-		gs.dealerHand, gs.deck = draw(gs.dealerHand, gs.deck)
+		drawPlayer(gs)
+		drawDealer(gs)
 	}
+	gs.playerHands[0].bet = gs.initBet
 }
 
 func dealerPlays(gs *gameState) {
 	s, soft := Score(gs.dealerHand)
 	for s < 17 || (s == 17 && soft) {
-		gs.dealerHand, gs.deck = draw(gs.dealerHand, gs.deck)
+		drawDealer(gs)
 		s, soft = Score(gs.dealerHand)
 	}
 }
 
-func showResult(gs *gameState) {
+func updateBalance(gs *gameState) {
 	sd, _ := Score(gs.dealerHand)
-	sp, _ := Score(gs.playerHand)
 	bjd := Blackjack(gs.dealerHand)
-	bjp := Blackjack(gs.playerHand)
 
-	fmt.Println("Dealer:")
-	fmt.Println("\t", gs.dealerHand)
-	fmt.Println("\tscore:", sd)
+	for _, h := range gs.playerHands {
+		sp, _ := Score(h.cards)
+		bjp := Blackjack(h.cards)
 
-	fmt.Println("Player:")
-	fmt.Println("\t", gs.playerHand)
-	fmt.Println("\tscore:", sp)
-
-	if bjp && bjd {
-		fmt.Println("Tie")
-	} else if bjd {
-		fmt.Println("Dealer won")
-		gs.cumWinnings -= gs.curBet
-	} else if bjp {
-		fmt.Println("You won")
-		gs.cumWinnings += int(1.5 * float64(gs.curBet))
-	} else if sp > 21 {
-		fmt.Println("You busted")
-		gs.cumWinnings -= gs.curBet
-	} else if sd > 21 {
-		fmt.Println("Dealer busted")
-		gs.cumWinnings += gs.curBet
-	} else if sp > sd {
-		fmt.Println("You won")
-		gs.cumWinnings += gs.curBet
-	} else if sp < sd {
-		fmt.Println("Dealer won")
-		gs.cumWinnings -= gs.curBet
-	} else if sp == sd {
-		fmt.Println("Tie")
+		switch {
+		case bjp && bjd:
+			// Tie
+		case bjd:
+			gs.cumWinnings -= h.bet
+		case bjp:
+			gs.cumWinnings += int(1.5 * float64(h.bet))
+		case sp > 21:
+			gs.cumWinnings -= h.bet
+		case sd > 21:
+			gs.cumWinnings += h.bet
+		case sp > sd:
+			gs.cumWinnings += h.bet
+		case sp < sd:
+			gs.cumWinnings -= h.bet
+		case sp == sd:
+			// Tie
+		}
 	}
 }
 
 func resetGame(gs *gameState) {
 	gs.dealerHand = nil
-	gs.playerHand = nil
+	gs.playerHands = make([]hand, 1)
 	gs.playersTurn = true
+	gs.idxHand = 0
 }
 
-func Blackjack(h Hand) bool {
+// Return true if hand is a blackjack
+func Blackjack(h []cardDeck.Card) bool {
 	s, _ := Score(h)
 	return len(h) == 2 && s == 21
 }
 
-func Score(h Hand) (int, bool) {
+// Return the score for a slice of cards and a bool to tell if score is soft or not
+func Score(h []cardDeck.Card) (int, bool) {
 	s := 0
 	soft := false
 	for _, c := range h {
@@ -183,14 +243,22 @@ func min(x int, y int) int {
 	return y
 }
 
-func (h Hand) String() string {
-	str := make([]string, len(h))
-	for i, c := range h {
+func (h hand) String() string {
+	cards := h.cards
+	str := make([]string, len(cards))
+	for i, c := range cards {
 		str[i] = c.String()
 	}
 	return strings.Join(str, ", ")
 }
 
-func (h Hand) StringDealer() string {
-	return fmt.Sprintf("%s, ***Hidden***", h[0])
+// Helper function to shuffle deck in game state
+func shuffleDeck(gs *gameState) {
+	gs.deck = cardDeck.NewDeck(cardDeck.WithMultipleDecks(gs.nbDecks), cardDeck.WithShuffle())
+	fmt.Println("Deck has been shuffled")
+}
+
+// Helper function to return current player hand
+func (gs *gameState) getCurPlayerHand() hand {
+	return gs.playerHands[gs.idxHand]
 }
